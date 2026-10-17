@@ -19,6 +19,10 @@ from app.schemas import PatientInput
 from pathlib import Path
 from fastapi.responses import FileResponse
 
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("patient-registration")
 
@@ -257,4 +261,53 @@ def delete_patient(patient_id: UUID, db: Session = Depends(get_db)):
 def dashboard():
     return FileResponse(
         Path(__file__).resolve().parent / "dashboard.html"
+    )
+
+
+class PatientLookupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone_number: str
+
+
+class VoicePatientUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: UUID
+    confirmed: Literal[True]
+    patient: PatientInput
+
+
+@app.post("/voice/lookup-patient")
+def voice_lookup_patient(
+    payload: PatientLookupRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        phone = PatientInput.validate_phone(payload.phone_number.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    matches = db.scalars(
+        select(Patient).where(
+            Patient.phone_number == phone,
+            Patient.deleted_at.is_(None),
+        )
+    ).all()
+
+    return success({
+        "match_count": len(matches),
+        "patients": [serialize_patient(patient) for patient in matches],
+    })
+
+
+@app.post("/voice/update-patient")
+def voice_update_patient(
+    payload: VoicePatientUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    return update_patient(
+        patient_id=payload.patient_id,
+        changes=payload.patient.model_dump(),
+        db=db,
     )
