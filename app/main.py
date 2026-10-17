@@ -239,7 +239,11 @@ def update_patient(
     db.commit()
     db.refresh(patient)
 
-    logger.info("Patient updated: %s", patient.patient_id)
+    logger.info(
+        "Patient updated: patient_id=%s payload=%s",
+        patient.patient_id,
+        jsonable_encoder(validated.model_dump()),
+    )
     return success(serialize_patient(patient))
 
 
