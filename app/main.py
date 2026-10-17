@@ -22,6 +22,9 @@ from fastapi.responses import FileResponse
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
+from fastapi import Header
+from app.call_logs import upsert_call_log
+from app.models import CallLog
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("patient-registration")
@@ -190,15 +193,31 @@ def get_patient(patient_id: UUID, db: Session = Depends(get_db)):
 def create_patient(
     payload: PatientInput,
     db: Session = Depends(get_db),
+    call_id: str | None = Header(
+        default=None,
+        alias="X-Vapi-Call-Id",
+        min_length=1,
+        max_length=100,
+    ),
 ):
     patient = Patient(**payload.model_dump())
     db.add(patient)
+    db.flush()
+
+    if call_id:
+        upsert_call_log(
+            db,
+            call_id,
+            patient_id=patient.patient_id,
+        )
+
+    # Patient creation and the call association commit together.
     db.commit()
     db.refresh(patient)
 
-    # Demo uses fictional data only, as required by the assessment.
     logger.info(
-        "Patient created: %s",
+        "Patient created: patient_id=%s payload=%s",
+        patient.patient_id,
         jsonable_encoder(payload.model_dump()),
     )
 
@@ -210,6 +229,12 @@ def update_patient(
     patient_id: UUID,
     changes: dict,
     db: Session = Depends(get_db),
+    call_id: str | None = Header(
+        default=None,
+        alias="X-Vapi-Call-Id",
+        min_length=1,
+        max_length=100,
+    ),
 ):
     patient = find_patient(db, patient_id)
 
@@ -236,6 +261,12 @@ def update_patient(
         setattr(patient, field, value)
 
     patient.updated_at = datetime.now(timezone.utc)
+    if call_id:
+        upsert_call_log(
+            db,
+            call_id,
+            patient_id=patient.patient_id,
+        )
     db.commit()
     db.refresh(patient)
 
@@ -309,9 +340,127 @@ def voice_lookup_patient(
 def voice_update_patient(
     payload: VoicePatientUpdateRequest,
     db: Session = Depends(get_db),
+    call_id: str | None = Header(
+        default=None,
+        alias="X-Vapi-Call-Id",
+        min_length=1,
+        max_length=100,
+    ),
 ):
     return update_patient(
         patient_id=payload.patient_id,
-        changes=payload.patient.model_dump(),
+        changes=payload.patient.model_dump(exclude_unset=True),
         db=db,
+        call_id=call_id,
     )
+
+@app.post("/webhooks/vapi")
+def vapi_webhook(
+    payload: dict,
+    db: Session = Depends(get_db),
+):
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Missing message object",
+        )
+
+    if message.get("type") != "end-of-call-report":
+        return success({"received": True, "ignored": True})
+
+    call = message.get("call") or {}
+    if not isinstance(call, dict):
+        raise HTTPException(status_code=400, detail="Invalid call object")
+
+    call_id = call.get("id")
+    if (
+        not isinstance(call_id, str)
+        or not call_id.strip()
+        or len(call_id) > 100
+    ):
+        raise HTTPException(status_code=400, detail="Invalid call ID")
+
+    artifact = message.get("artifact") or {}
+    if not isinstance(artifact, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid artifact object",
+        )
+
+    transcript = artifact.get("transcript")
+
+    # Fallback if Vapi supplies messages without a combined transcript.
+    if not isinstance(transcript, str) or not transcript.strip():
+        lines = []
+        messages = artifact.get("messages") or []
+
+        if isinstance(messages, list):
+            for item in messages:
+                if not isinstance(item, dict):
+                    continue
+
+                role = item.get("role")
+                text = item.get("message")
+
+                if (
+                    role in {"user", "assistant", "bot"}
+                    and isinstance(text, str)
+                    and text.strip()
+                ):
+                    lines.append(f"{role}: {text}")
+
+        transcript = "\n".join(lines)
+
+    if not transcript.strip():
+        # Leave an existing transcript intact if a report is incomplete.
+        raise HTTPException(
+            status_code=422,
+            detail="End-of-call report contains no transcript",
+        )
+
+    ended_reason = message.get("endedReason")
+    if ended_reason is not None:
+        if not isinstance(ended_reason, str):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid endedReason",
+            )
+        ended_reason = ended_reason[:255]
+
+    upsert_call_log(
+        db,
+        call_id,
+        transcript=transcript,
+        ended_reason=ended_reason,
+    )
+    db.commit()
+
+    logger.info("Call transcript stored: call_id=%s", call_id)
+    return success({"received": True, "call_id": call_id})
+
+
+@app.get("/patients/{patient_id}/calls")
+def get_patient_calls(
+    patient_id: UUID,
+    db: Session = Depends(get_db),
+):
+    find_patient(db, patient_id)
+
+    calls = db.scalars(
+        select(CallLog)
+        .where(CallLog.patient_id == patient_id)
+        .order_by(CallLog.created_at.desc())
+    ).all()
+
+    return success([
+        {
+            "call_id": call.call_id,
+            "patient_id": str(call.patient_id),
+            "transcript": call.transcript,
+            "ended_reason": call.ended_reason,
+            "created_at": jsonable_encoder(call.created_at),
+            "updated_at": jsonable_encoder(call.updated_at),
+        }
+        for call in calls
+    ])

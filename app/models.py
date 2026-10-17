@@ -7,6 +7,8 @@ from sqlalchemy import (
     DateTime,
     String,
     Uuid,
+    ForeignKey,
+    Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -110,4 +112,30 @@ class Patient(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+    )
+    
+class CallLog(Base):
+    __tablename__ = "call_logs"
+
+    call_id: Mapped[str] = mapped_column(
+        String(100),
+        primary_key=True,
+    )
+    patient_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("patients.patient_id"),
+        nullable=True,
+        index=True,
+    )
+    transcript: Mapped[str | None] = mapped_column(Text)
+    ended_reason: Mapped[str | None] = mapped_column(String(255))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
     )
