@@ -16,6 +16,9 @@ from app.database import Base, engine, get_db
 from app.models import Patient
 from app.schemas import PatientInput
 
+from pathlib import Path
+from fastapi.responses import FileResponse
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("patient-registration")
 
@@ -249,3 +252,9 @@ def delete_patient(patient_id: UUID, db: Session = Depends(get_db)):
         "patient_id": str(patient_id),
         "deleted_at": now.isoformat(),
     })
+
+@app.get("/", include_in_schema=False)
+def dashboard():
+    return FileResponse(
+        Path(__file__).resolve().parent / "dashboard.html"
+    )

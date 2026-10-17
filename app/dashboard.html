@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CareCloud | Patient Registrations</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f4f7fb;
+      color: #172b4d;
+      font: 15px system-ui, sans-serif;
+    }
+    main { max-width: 1200px; margin: auto; padding: 40px 24px; }
+    header {
+      display: flex; justify-content: space-between;
+      align-items: center; gap: 20px; flex-wrap: wrap;
+    }
+    h1 { margin: 5px 0; font-size: 30px; }
+    h2 { margin-top: 0; }
+    .brand { color: #087f8c; font-weight: 750; }
+    .muted { color: #607086; }
+    .notice {
+      background: #fff5d8; color: #735412;
+      padding: 12px 16px; border-radius: 10px; margin: 24px 0;
+    }
+    .card {
+      background: white; border: 1px solid #dfe7ef;
+      border-radius: 14px; padding: 22px; margin-top: 20px;
+    }
+    form {
+      display: flex; align-items: end; gap: 14px; flex-wrap: wrap;
+    }
+    label { display: grid; gap: 7px; flex: 1; min-width: 170px; }
+    input, button {
+      font: inherit; padding: 11px 13px;
+      border: 1px solid #cbd5e1; border-radius: 8px;
+    }
+    button {
+      background: #087f8c; color: white;
+      border-color: #087f8c; cursor: pointer;
+    }
+    button.secondary { background: white; color: #087f8c; }
+    button:disabled { opacity: .6; cursor: wait; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      text-align: left; padding: 14px 12px;
+      border-bottom: 1px solid #e6edf3; white-space: nowrap;
+    }
+    th { font-size: 12px; text-transform: uppercase; color: #607086; }
+    #status { min-height: 22px; margin: 18px 0; }
+    .error { color: #b42318; }
+    dialog {
+      border: 0; border-radius: 14px; padding: 26px;
+      max-width: 650px; width: calc(100% - 32px);
+      max-height: 85vh;
+    }
+    dialog::backdrop { background: #172b4d80; }
+    dl { display: grid; grid-template-columns: 1fr 1.5fr; gap: 12px; }
+    dt { color: #607086; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    a { color: #087f8c; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="brand">CareCloud · Voice Intake Demo</div>
+      <h1>Patient registrations</h1>
+      <p class="muted">View and search confirmed patient records.</p>
+    </div>
+    <a href="/docs" target="_blank" rel="noopener">API documentation ↗</a>
+  </header>
+
+  <div class="notice">
+    Demonstration only. Use fictional patient information.
+  </div>
+
+  <section class="card" aria-label="Patient filters">
+    <form id="filters">
+      <label>
+        Last name
+        <input id="last_name" placeholder="e.g. Carter">
+      </label>
+      <label>
+        Date of birth
+        <input id="date_of_birth" type="date">
+      </label>
+      <label>
+        Phone number
+        <input id="phone_number" type="tel" placeholder="e.g. 2025550186">
+      </label>
+      <button type="submit">Search</button>
+      <button type="button" class="secondary" id="reset">Reset</button>
+      <button type="button" class="secondary" id="refresh">Refresh</button>
+    </form>
+  </section>
+
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <section class="card">
+    <h2 id="count">Patients</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Date of birth</th>
+            <th>Phone</th>
+            <th>Location</th>
+            <th>Registered</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody id="patients"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <dialog id="details">
+    <h2>Patient details</h2>
+    <dl id="fields"></dl>
+    <button id="close" type="button">Close</button>
+  </dialog>
+</main>
+
+<script>
+  const form = document.querySelector("#filters");
+  const rows = document.querySelector("#patients");
+  const status = document.querySelector("#status");
+  const dialog = document.querySelector("#details");
+  const fields = document.querySelector("#fields");
+  let loading = false;
+
+  function displayDetails(patient) {
+    fields.replaceChildren();
+
+    for (const [key, value] of Object.entries(patient)) {
+      const label = document.createElement("dt");
+      label.textContent = key.replaceAll("_", " ");
+
+      const content = document.createElement("dd");
+      content.textContent = value === null ? "Not provided" : String(value);
+
+      fields.append(label, content);
+    }
+
+    dialog.showModal();
+  }
+
+  async function loadPatients() {
+    if (loading) return;
+    loading = true;
+
+    const buttons = form.querySelectorAll("button");
+    buttons.forEach(button => button.disabled = true);
+
+    status.className = "muted";
+    status.textContent = "Loading patients…";
+
+    const params = new URLSearchParams();
+    for (const name of ["last_name", "date_of_birth", "phone_number"]) {
+      const value = document.getElementById(name).value.trim();
+      if (value) params.set(name, value);
+    }
+
+    try {
+      const response = await fetch(`/patients?${params}`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(15000)
+      });
+      const result = await response.json();
+
+      if (!response.ok || result.error) {
+        throw new Error(
+          result.error?.message || "Unable to load patient records."
+        );
+      }
+
+      rows.replaceChildren();
+
+      for (const patient of result.data) {
+        const row = document.createElement("tr");
+        const values = [
+          `${patient.first_name} ${patient.last_name}`,
+          patient.date_of_birth,
+          patient.phone_number,
+          `${patient.city}, ${patient.state}`,
+          new Date(patient.created_at).toLocaleString()
+        ];
+
+        for (const value of values) {
+          const cell = document.createElement("td");
+          cell.textContent = value;
+          row.append(cell);
+        }
+
+        const action = document.createElement("td");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary";
+        button.textContent = "View";
+        button.setAttribute(
+          "aria-label",
+          `View ${patient.first_name} ${patient.last_name}`
+        );
+        button.addEventListener("click", () => displayDetails(patient));
+        action.append(button);
+        row.append(action);
+        rows.append(row);
+      }
+
+      document.querySelector("#count").textContent =
+        `Patients (${result.data.length})`;
+
+      status.textContent = result.data.length
+        ? `Updated ${new Date().toLocaleTimeString()}`
+        : "No patients match these filters.";
+    } catch (error) {
+      rows.replaceChildren();
+      document.querySelector("#count").textContent = "Patients";
+      status.className = "error";
+      status.textContent = error.message;
+    } finally {
+      loading = false;
+      buttons.forEach(button => button.disabled = false);
+    }
+  }
+
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    loadPatients();
+  });
+
+  document.querySelector("#reset").addEventListener("click", () => {
+    form.reset();
+    loadPatients();
+  });
+
+  document.querySelector("#refresh").addEventListener("click", loadPatients);
+  document.querySelector("#close").addEventListener("click", () => dialog.close());
+
+  loadPatients();
+</script>
+</body>
+</html>
